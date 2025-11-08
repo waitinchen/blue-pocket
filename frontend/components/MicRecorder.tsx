@@ -3,6 +3,39 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 const SERVICE_API_KEY =
   import.meta.env.VITE_SERVICE_API_KEY || "RIUvXLm99TG_jOyN6gP1vTYE1fdmXyMxL5tLDzMwFiA";
 
+const stripTrailingSlash = (value: string) => value.replace(/\/+$/, "");
+
+const resolveApiBase = () => {
+  const envBase = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
+  if (envBase) {
+    return stripTrailingSlash(envBase);
+  }
+  if (typeof window !== "undefined") {
+    return stripTrailingSlash(window.location.origin);
+  }
+  return "";
+};
+
+const buildHttpUrl = (path: string) => {
+  const base = resolveApiBase();
+  if (!base) {
+    return path;
+  }
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return new URL(normalizedPath, `${base}/`).toString();
+};
+
+const buildWebSocketUrl = (path: string, params: URLSearchParams) => {
+  const base = resolveApiBase() || (typeof window !== "undefined" ? window.location.origin : "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const url = new URL(normalizedPath, `${base}/`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  params.forEach((value, key) => {
+    url.searchParams.set(key, value);
+  });
+  return url.toString();
+};
+
 type WhisperMessage =
   | { type: "ready" }
   | { type: "final"; text: string }
@@ -53,7 +86,7 @@ const MicRecorder: React.FC<MicRecorderProps> = ({ onVoiceTagsChange, onSpeaking
     setVoiceTags([]);
 
     try {
-      const response = await fetch("/api/voice/huangrong", {
+      const response = await fetch(buildHttpUrl("/api/voice/huangrong"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -137,9 +170,8 @@ const MicRecorder: React.FC<MicRecorderProps> = ({ onVoiceTagsChange, onSpeaking
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const params = new URLSearchParams({ service_api_key: SERVICE_API_KEY });
-      const wsUrl = `${protocol}://${window.location.host}/api/whisper?${params.toString()}`;
+      const wsUrl = buildWebSocketUrl("/api/whisper", params);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
