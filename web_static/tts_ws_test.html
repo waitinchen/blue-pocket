@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TTS WebSocket Streaming Test</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; padding: 16px; }
+    .row { display: flex; gap: 8px; margin-bottom: 12px; }
+    textarea { width: 100%; height: 120px; }
+    #log { white-space: pre-wrap; background:#f6f8fa; padding:10px; border-radius:8px; height:180px; overflow:auto; }
+    audio { width: 100%; margin-top: 12px; }
+    button { padding: 8px 14px; }
+  </style>
+</head>
+<body>
+  <h2>ElevenLabs TTS Streaming over WebSocket</h2>
+  <div class="row">
+    <input id="wsUrl" value="ws://localhost:8000/api/voice/stream-ws" style="flex:1" />
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn">Disconnect</button>
+  </div>
+
+  <div class="row">
+    <input id="voiceId" placeholder="voice_id (optional)" style="flex:1" />
+    <label style="display:flex;align-items:center;gap:6px;">
+      Provider
+      <select id="agentProvider">
+        <option value="openai" selected>openai</option>
+        <option value="anthropic">anthropic</option>
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:6px;">
+      Max chars
+      <input type="number" id="maxChars" value="120" min="20" max="1000" style="width:80px" />
+    </label>
+  </div>
+
+  <textarea id="textInput" placeholder="輸入要朗讀的文字..."></textarea>
+  <div class="row">
+    <button id="speakBtn">Speak</button>
+    <button id="stopBtn">Stop</button>
+  </div>
+
+  <div>
+    <strong>Player</strong>
+    <audio id="player" controls></audio>
+  </div>
+
+  <h3>Log</h3>
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const player = document.getElementById('player');
+    const speakBtn = document.getElementById('speakBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const wsUrlEl = document.getElementById('wsUrl');
+    const voiceIdEl = document.getElementById('voiceId');
+    const providerEl = document.getElementById('agentProvider');
+    const maxCharsEl = document.getElementById('maxChars');
+    const textInput = document.getElementById('textInput');
+
+    let ws;
+    let mediaSource;
+    let sourceBuffer;
+    let queue = [];
+    let open = false;
+
+    function log(...args){
+      const line = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+      console.log('[LOG]', ...args);
+      logEl.textContent += line + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function ensureMediaSource(){
+      if (mediaSource) return;
+      mediaSource = new MediaSource();
+      const url = URL.createObjectURL(mediaSource);
+      player.src = url;
+      mediaSource.addEventListener('sourceopen', () => {
+        try {
+          // audio/mpeg for mp3
+          sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+          sourceBuffer.mode = 'sequence';
+          sourceBuffer.addEventListener('updateend', feedBuffer);
+          feedBuffer();
+        } catch (e) {
+          log('sourceBuffer error', e.message);
+        }
+      });
+    }
+
+    function feedBuffer(){
+      if (!sourceBuffer || sourceBuffer.updating) return;
+      if (queue.length === 0) return;
+      // 防堆積：過長時丟掉最舊的幾塊
+      if (queue.length > 50) queue.splice(0, 5);
+      // 批次追加 2 塊以降低 update 次數
+      for (let i=0; i<2 && queue.length>0 && !sourceBuffer.updating; i++){
+        const chunk = queue.shift();
+        try { sourceBuffer.appendBuffer(chunk); } catch (e) { log('appendBuffer error:', e.message); }
+      }
+    }
+
+    function base64ToUint8Array(b64){
+      const binary = atob(b64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i=0; i<len; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    connectBtn.onclick = () => {
+      if (ws && open) return;
+      ws = new WebSocket(wsUrlEl.value.trim());
+      ws.onopen = () => { open = true; log('WS open'); };
+      ws.onclose = () => { open = false; log('WS closed'); };
+      ws.onerror = (e) => { log('WS error', e?.message || ''); };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'tts_chunk') {
+            ensureMediaSource();
+            const bytes = base64ToUint8Array(msg.data);
+            queue.push(bytes);
+            feedBuffer();
+            // 啟播緩衝：累積 >=3 塊再播放
+            if (queue.length >= 3 || player.paused) player.play().catch(()=>{});
+          } else if (msg.type === 'tts_done') {
+            log('tts_done');
+            try { mediaSource && mediaSource.endOfStream(); } catch {}
+          } else if (msg.type === 'error') {
+            log('error:', msg.message);
+          } else if (msg === 'pong' || msg.type === 'pong') {
+            // ignore
+          } else {
+            log('msg:', msg);
+          }
+        } catch {
+          log('text:', ev.data);
+        }
+      };
+    };
+
+    disconnectBtn.onclick = () => { if (ws) ws.close(); };
+
+    speakBtn.onclick = () => {
+      if (!ws || !open) return log('WS not open');
+      // reset media source per speak
+      mediaSource = null; sourceBuffer = null; queue = []; player.src = '';
+      const maxChars = Math.max(20, Math.min(1000, parseInt(maxCharsEl.value||'120',10)));
+      const text = textInput.value.trim().slice(0, maxChars);
+      const payload = { type: 'speech', text };
+      const vid = voiceIdEl.value.trim();
+      if (vid) payload.voice_id = vid;
+      const provider = providerEl.value || 'openai';
+      // 提示目前設定
+      log(`[Speak] provider=${provider}${vid?`, voice=${vid}`:''}, len=${text.length}`);
+      ws.send(JSON.stringify(payload));
+    };
+
+    stopBtn.onclick = () => { if (ws && open) ws.send(JSON.stringify({ type: 'stop' })); };
+  </script>
+</body>
+</html>

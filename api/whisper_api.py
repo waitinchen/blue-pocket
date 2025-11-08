@@ -1,14 +1,15 @@
 """FastAPI WebSocket endpoint for streaming audio to Whisper."""
 
+import json
 import logging
 import os
 import tempfile
+from collections import deque
 from pathlib import Path
-from typing import List
+from typing import Deque, List, Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from openai import OpenAI
-
 
 router = APIRouter()
 
@@ -16,6 +17,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
 SERVICE_API_KEY = os.getenv("SERVICE_API_KEY")
 CHUNK_THRESHOLD = 4  # number of MediaRecorder chunks (~2-4 seconds)
+ENERGY_WINDOW_SECONDS = 4
+ENERGY_SAMPLE_RATE = 60  # expected client-side sampling per second
 DEFAULT_MIME_TYPE = "audio/webm"
 
 MIME_SUFFIX_MAP = {
@@ -31,7 +34,7 @@ MIME_SUFFIX_MAP = {
 
 logger = logging.getLogger("voice_agent")
 
-client: OpenAI | None = None
+client: Optional[OpenAI] = None
 if OPENAI_API_KEY:
     client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -50,6 +53,30 @@ def _verify_service_key(websocket: WebSocket) -> bool:
         return False
     logger.info("whisper websocket api key verified", extra={"client": client_host})
     return True
+
+
+def _estimate_emotion(avg_energy: float) -> str:
+    if avg_energy >= 65:
+        return "happy"
+    if avg_energy <= 35:
+        return "soft"
+    return "neutral"
+
+
+def _summarize_energy(
+    energy_values: Deque[float],
+    peak_energy: float,
+    forced_emotion: Optional[str] = None,
+) -> Optional[dict]:
+    if not energy_values:
+        return None
+    avg_energy = sum(energy_values) / len(energy_values)
+    emotion = forced_emotion or _estimate_emotion(avg_energy)
+    return {
+        "avgEnergy": round(avg_energy, 2),
+        "peakEnergy": round(peak_energy, 2),
+        "emotionEstimate": emotion,
+    }
 
 
 async def _transcribe_chunks(chunks: List[bytes], file_suffix: str) -> str:
@@ -76,6 +103,34 @@ async def _transcribe_chunks(chunks: List[bytes], file_suffix: str) -> str:
             pass
 
 
+async def transcribe_media_chunks(chunks: List[bytes], mime_type: str) -> str:
+    """
+    Helper shared by realtime pipelines to transcribe MediaRecorder chunks with Whisper.
+    """
+    if not chunks:
+        return ""
+    file_suffix = MIME_SUFFIX_MAP.get(mime_type, ".webm")
+    return await _transcribe_chunks(chunks, file_suffix)
+
+
+def summarize_energy_window(
+    energy_values: Deque[float],
+    peak_energy: float,
+    forced_emotion: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Summarize rolling energy metrics in a format suitable for frontend visualisation.
+    """
+    return _summarize_energy(energy_values, peak_energy, forced_emotion)
+
+
+def estimate_emotion(avg_energy: float) -> str:
+    """
+    Expose default energy→emotion mapping for other modules.
+    """
+    return _estimate_emotion(avg_energy)
+
+
 @router.websocket("/api/whisper")
 async def whisper_websocket(websocket: WebSocket):
     if not _verify_service_key(websocket):
@@ -98,6 +153,9 @@ async def whisper_websocket(websocket: WebSocket):
         return
 
     audio_chunks: List[bytes] = []
+    energy_history: Deque[float] = deque(maxlen=ENERGY_WINDOW_SECONDS * ENERGY_SAMPLE_RATE)
+    peak_energy: float = 0.0
+    last_metrics: Optional[dict] = None
 
     try:
         await websocket.send_json({"type": "ready"})
@@ -110,13 +168,38 @@ async def whisper_websocket(websocket: WebSocket):
 
                 if len(audio_chunks) >= CHUNK_THRESHOLD:
                     try:
-                        text = await _transcribe_chunks(audio_chunks, file_suffix)
-                        await websocket.send_json({"type": "final", "text": text})
+                        text = await transcribe_media_chunks(audio_chunks, mime_type)
+                        payload = {"type": "final", "text": text}
+                        metrics = summarize_energy_window(energy_history, peak_energy)
+                        if metrics:
+                            payload["energyMetrics"] = metrics
+                            last_metrics = metrics
+                        await websocket.send_json(payload)
                     except Exception as exc:  # noqa: BLE001
                         logger.error("whisper transcribe failed", exc_info=exc)
                         await websocket.send_json({"type": "error", "message": str(exc)})
                     finally:
                         audio_chunks.clear()
+
+            elif "text" in message and message["text"] is not None:
+                try:
+                    data = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    continue
+
+                if data.get("type") == "energy":
+                    avg = float(data.get("avg", 0.0))
+                    peak = float(data.get("peak", avg))
+                    emotion = data.get("emotionEstimate")
+
+                    energy_history.append(avg)
+                    peak_energy = max(peak, peak_energy * 0.92)
+
+                    metrics = summarize_energy_window(energy_history, peak_energy, emotion)
+                    if metrics:
+                        last_metrics = metrics
+                        # 回傳即時能量（可選）
+                        await websocket.send_json({"type": "energy", "energyMetrics": metrics})
 
             elif message.get("type") == "websocket.disconnect":
                 break
@@ -126,8 +209,12 @@ async def whisper_websocket(websocket: WebSocket):
     finally:
         if audio_chunks:
             try:
-                text = await _transcribe_chunks(audio_chunks, file_suffix)
-                await websocket.send_json({"type": "final", "text": text})
+                text = await transcribe_media_chunks(audio_chunks, mime_type)
+                payload = {"type": "final", "text": text}
+                metrics = last_metrics or summarize_energy_window(energy_history, peak_energy)
+                if metrics:
+                    payload["energyMetrics"] = metrics
+                await websocket.send_json(payload)
             except Exception:
                 pass
         audio_chunks.clear()

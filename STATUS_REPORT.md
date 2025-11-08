@@ -13,6 +13,7 @@
 - ✅ `api/main.py` - FastAPI 後端完整實現
   - POST `/api/voice/huangrong` - 產生語音並回傳 URL
   - POST `/api/voice/huangrong/stream` - 直接返回音訊流
+  - WebSocket `/api/voice/stream` - 串接 Whisper / LLM / ElevenLabs 即時管線
   - GET `/audio/{filename}` - 音訊檔案下載
   - GET `/health` - 健康檢查
   - CORS 支援
@@ -38,6 +39,18 @@
 - ✅ `requirements.txt` - Python 依賴清單
 - ✅ `test_tools.py` - 測試工具
 - ✅ `check_config.py` - 配置檢查工具
+
+### 6. 視覺與體驗
+- ✅ Three.js Shader `LiquidSphere`（能源平滑、粒子呼吸、波紋共振）
+- ✅ ChatKit 對話介面整合（同步語音播報、文字互動）
+- ✅ 前端樣式更新（情緒標籤、播放狀態、ChatKit 面板）
+
+### 7. CI/CD
+- ✅ GitHub Actions：`.github/workflows/ci-cd.yml`
+  - PR 與 push 自動執行 `pytest`、`npm run build`
+  - `main` 分支自動部署至 Vercel（前端）與 Railway（後端）
+- ✅ `railway.toml` - Railway 部署設定（健康檢查、啟動指令）
+- ✅ `frontend/vercel.json` - Vercel 部署設定
 
 ## ⚠️ 缺少或需要改進的項目
 
@@ -72,7 +85,6 @@
 - ❌ 音訊檔案清理機制（自動刪除舊檔案）
 - ❌ 快取機制（Redis）避免重複產生
 - ❌ 批次語音產生 API
-- ❌ WebSocket 即時語音流
 - ❌ 多聲線切換功能
 - ❌ 語音品質參數調整介面
 

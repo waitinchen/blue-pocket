@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Realtime STT + TTS Demo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; padding: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    textarea { width: 100%; height: 120px; }
+    #log, #sttLog { white-space: pre-wrap; background:#f6f8fa; padding:10px; border-radius:8px; height:180px; overflow:auto; }
+    audio { width: 100%; margin-top: 12px; }
+    button { padding: 8px 14px; }
+    .badge { display:inline-block; padding:2px 6px; border-radius:6px; font-size:12px; background:#eef2ff; color:#3730a3; }
+  </style>
+</head>
+<body>
+  <h2>Realtime STT + TTS Demo</h2>
+  <p>
+    <span class="badge">STT</span> 連線：<code>ws://localhost:8000/api/realtime/ws</code>
+    &nbsp;&nbsp;
+    <span class="badge">TTS</span> 連線：<code>ws://localhost:8000/api/voice/stream-ws</code>
+  </p>
+
+  <div class="grid">
+    <!-- STT Panel -->
+    <div class="card">
+      <h3>🎙️ STT（麥克風 → Transcript）</h3>
+      <div class="row">
+        <button id="sttConnect">Connect</button>
+        <button id="sttDisconnect">Disconnect</button>
+        <button id="sttStart">Start Mic</button>
+        <button id="sttStop">Stop Mic</button>
+      </div>
+      <div class="row"><strong>Transcript</strong></div>
+      <div id="sttText" style="min-height:48px; border:1px dashed #e5e7eb; padding:8px; border-radius:8px;"></div>
+      <div class="row"><strong>Energy/Emotion</strong></div>
+      <div id="sttMeta" style="min-height:24px; color:#6b7280;"></div>
+      <div class="row">
+        <label><input type="checkbox" id="autoReply" /> Auto Reply</label>
+        <label>Interval <input type="number" id="autoInterval" value="2000" min="500" style="width:90px" /> ms</label>
+      </div>
+      <h4>STT Log</h4>
+      <div id="sttLog"></div>
+    </div>
+
+    <!-- TTS Panel -->
+    <div class="card">
+      <h3>🔊 TTS（Text → Streaming Audio）</h3>
+      <div class="row">
+        <input id="voiceId" placeholder="voice_id (optional)" style="flex:1" />
+        <label style="display:flex;align-items:center;gap:6px;">
+          Provider
+          <select id="agentProvider">
+            <option value="openai" selected>openai</option>
+            <option value="anthropic">anthropic</option>
+          </select>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;">
+          Max chars
+          <input type="number" id="maxChars" value="120" min="20" max="1000" style="width:80px" />
+        </label>
+      </div>
+      <textarea id="textInput" placeholder="輸入要朗讀的文字..."></textarea>
+      <div class="row">
+        <button id="ttsConnect">Connect</button>
+        <button id="ttsDisconnect">Disconnect</button>
+        <button id="speakBtn">Speak</button>
+        <button id="stopBtn">Stop</button>
+        <button id="agentBtn">Agent Reply (from STT)</button>
+      </div>
+      <audio id="player" controls></audio>
+      <h4>TTS Log</h4>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- Helpers ----------
+    function append(el, ...args){
+      const line = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+      el.textContent += line + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+    function base64ToUint8Array(b64){
+      const binary = atob(b64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i=0; i<len; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    // ---------- STT ----------
+    const sttLog = document.getElementById('sttLog');
+    const sttText = document.getElementById('sttText');
+    const sttMeta = document.getElementById('sttMeta');
+    let sttWs, sttOpen=false, mr, micStream;
+    const autoReplyEl = document.getElementById('autoReply');
+    const autoIntervalEl = document.getElementById('autoInterval');
+    let autoReplyLock = false;
+    let lastAutoAt = 0;
+
+    document.getElementById('sttConnect').onclick = () => {
+      if (sttWs && sttOpen) return;
+      sttWs = new WebSocket('ws://localhost:8000/api/realtime/ws');
+      sttWs.binaryType = 'arraybuffer';
+      sttWs.onopen = () => { sttOpen=true; append(sttLog,'[STT] open'); };
+      sttWs.onclose = () => { sttOpen=false; append(sttLog,'[STT] closed'); };
+      sttWs.onerror = (e) => append(sttLog,'[STT] error', e?.message||'');
+      sttWs.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'transcript') {
+            sttText.textContent = (sttText.textContent + ' ' + msg.text).trim();
+            if (msg.is_final === true && autoReplyEl.checked) {
+              const now = Date.now();
+              const gap = parseInt(autoIntervalEl.value||'2000', 10);
+              if (!autoReplyLock && now - lastAutoAt >= gap) {
+                autoReplyLock = true; lastAutoAt = now;
+                (async () => {
+                  try {
+                    const full = sttText.textContent.trim();
+                    const maxChars = Math.max(20, Math.min(1000, parseInt(maxCharsEl.value||'120',10)));
+                    const text = full.slice(-maxChars);
+                    if (!text) return;
+                    const provider = providerEl.value || 'openai';
+                    const voice_id = (voiceIdEl.value||'').trim() || undefined;
+                    const res = await fetch('/api/agent/reply', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ text, provider, voice_id })
+                    });
+                    if (!res.ok) throw new Error('agent http '+res.status);
+                    const data = await res.json();
+                    const preview = (data.reply_text||'').slice(0,40);
+                    append(logEl, `[Auto] reply ok (${provider}${voice_id?`, voice=${voice_id}`:''}):`, preview + ((data.reply_text||'').length>40?'…':''));
+                    if (data.audio_url){ player.src = data.audio_url; await player.play().catch(()=>{}); }
+                  } catch(e){ append(logEl,'[Auto] error', e.message||String(e)); }
+                  finally { autoReplyLock = false; }
+                })();
+              }
+              else if (now - lastAutoAt < gap) {
+                append(logEl, `[Auto] cooling down ${gap - (now - lastAutoAt)}ms`);
+              }
+            }
+          } else if (msg.type === 'energy') {
+            sttMeta.textContent = 'energy: ' + msg.value.toFixed ? msg.value.toFixed(2) : msg.value;
+          } else if (msg.type === 'emotion') {
+            sttMeta.textContent += ' | emotion: ' + msg.value + ' (' + (msg.intensity||0) + ')';
+          } else {
+            append(sttLog, '[WS<-]', msg);
+          }
+        } catch {
+          append(sttLog, '[text]', ev.data);
+        }
+      };
+    };
+    document.getElementById('sttDisconnect').onclick = () => { if (sttWs) sttWs.close(); };
+    document.getElementById('sttStart').onclick = async () => {
+      if (!sttWs || !sttOpen) return append(sttLog,'[STT] not open');
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mr = new MediaRecorder(micStream, { mimeType: 'audio/webm;codecs=opus' });
+      mr.ondataavailable = async (e) => {
+        if (e.data && e.data.size>0 && sttWs.readyState===1){
+          const buf = await e.data.arrayBuffer();
+          sttWs.send(buf);
+        }
+      };
+      mr.start(200);
+      append(sttLog,'[STT] recording start');
+    };
+    document.getElementById('sttStop').onclick = () => {
+      if (mr && mr.state!=='inactive') mr.stop();
+      if (micStream) micStream.getTracks().forEach(t=>t.stop());
+      append(sttLog,'[STT] recording stopped');
+    };
+
+    // ---------- TTS ----------
+    const logEl = document.getElementById('log');
+    const player = document.getElementById('player');
+    const voiceIdEl = document.getElementById('voiceId');
+    const providerEl = document.getElementById('agentProvider');
+    const maxCharsEl = document.getElementById('maxChars');
+    const textInput = document.getElementById('textInput');
+    const agentBtn = document.getElementById('agentBtn');
+    let ttsWs, ttsOpen=false, mediaSource, sourceBuffer, queue=[];
+
+    document.getElementById('ttsConnect').onclick = () => {
+      if (ttsWs && ttsOpen) return;
+      ttsWs = new WebSocket('ws://localhost:8000/api/voice/stream-ws');
+      ttsWs.onopen = () => { ttsOpen=true; append(logEl,'[TTS] open'); };
+      ttsWs.onclose = () => { ttsOpen=false; append(logEl,'[TTS] closed'); };
+      ttsWs.onerror = (e) => append(logEl,'[TTS] error', e?.message||'');
+      ttsWs.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'tts_chunk') {
+            ensureMediaSource();
+            const bytes = base64ToUint8Array(msg.data);
+            queue.push(bytes); feedBuffer();
+            if (queue.length >= 3 || player.paused) player.play().catch(()=>{});
+          } else if (msg.type === 'tts_done') {
+            append(logEl, 'tts_done');
+            try { mediaSource && mediaSource.endOfStream(); } catch {}
+          } else if (msg.type === 'error') {
+            append(logEl, 'error:', msg.message);
+          } else {
+            append(logEl, '[WS<-]', msg);
+          }
+        } catch {
+          append(logEl, '[text]', ev.data);
+        }
+      };
+    };
+    document.getElementById('ttsDisconnect').onclick = () => { if (ttsWs) ttsWs.close(); };
+    document.getElementById('speakBtn').onclick = () => {
+      if (!ttsWs || !ttsOpen) return append(logEl,'[TTS] not open');
+      resetPlayer();
+      const payload = { type:'speech', text:textInput.value.trim() };
+      const vid = voiceIdEl.value.trim(); if (vid) payload.voice_id = vid;
+      ttsWs.send(JSON.stringify(payload));
+    };
+    document.getElementById('stopBtn').onclick = () => { if (ttsWs && ttsOpen) ttsWs.send(JSON.stringify({type:'stop'})); };
+
+    // Agent: 用 STT 的最新文字呼叫 /api/agent/reply，回傳 audio_url 直接播放
+    agentBtn.onclick = async () => {
+      const fullText = sttText.textContent.trim();
+      const maxChars = Math.max(20, Math.min(1000, parseInt(maxCharsEl.value||'120',10)));
+      const lastText = fullText.slice(-maxChars);
+      if (!lastText) return append(logEl,'[Agent] no transcript');
+      resetPlayer();
+      try {
+        const provider = providerEl.value || 'openai';
+        const voice_id = (voiceIdEl.value||'').trim() || undefined;
+        const res = await fetch('/api/agent/reply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: lastText, provider, voice_id })
+        });
+        if (!res.ok) throw new Error('agent http '+res.status);
+        const data = await res.json();
+        const preview = (data.reply_text||'').slice(0,40);
+        append(logEl, `[Agent] reply ok (${provider}${voice_id?`, voice=${voice_id}`:''}):`, preview + ((data.reply_text||'').length>40?'…':''));
+        if (data.audio_url){ player.src = data.audio_url; await player.play().catch(()=>{}); }
+      } catch(e){ append(logEl,'[Agent] error', e.message||String(e)); }
+    };
+
+    function resetPlayer(){ mediaSource=null; sourceBuffer=null; queue=[]; player.src=''; }
+    function ensureMediaSource(){
+      if (mediaSource) return;
+      mediaSource = new MediaSource();
+      const url = URL.createObjectURL(mediaSource); player.src = url;
+      mediaSource.addEventListener('sourceopen', () => {
+        try {
+          sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+          sourceBuffer.mode = 'sequence';
+          sourceBuffer.addEventListener('updateend', feedBuffer);
+          feedBuffer();
+        } catch (e) { append(logEl,'sourceBuffer error', e.message); }
+      });
+    }
+    function feedBuffer(){
+      if (!sourceBuffer || sourceBuffer.updating) return;
+      if (queue.length===0) return;
+      if (queue.length > 50) queue.splice(0,5);
+      for (let i=0; i<2 && queue.length>0 && !sourceBuffer.updating; i++){
+        const chunk = queue.shift();
+        try { sourceBuffer.appendBuffer(chunk); } catch(e){ append(logEl,'appendBuffer error:', e.message); }
+      }
+    }
+  </script>
+</body>
+</html>

@@ -9,12 +9,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@openai/chatkit-react": "^1.2.0",
+    "matter-js": "^0.19.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "three": "^0.160.0",
+    "zustand": "^4.5.2"
   },
   "devDependencies": {
+    "@types/matter-js": "^0.19.7",
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",
+    "@types/three": "^0.160.0",
     "@vitejs/plugin-react": "^4.2.1",
     "typescript": "^5.3.3",
     "vite": "^5.0.5"

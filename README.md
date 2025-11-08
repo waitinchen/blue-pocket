@@ -151,4 +151,86 @@ generate_speech(tagged_text, filename="huangrong_line.mp3")
 ## 📝 授權
 
 本專案為開發測試用途。
+## 一鍵啟動與驗收
 
+- Windows 一鍵：
+  - `powershell -ExecutionPolicy Bypass -File scripts/start-realtime-dev.ps1`
+  - 自動建立 `.venv`、安裝 Python 依賴、`npm install` 前端套件，並生成 `.env` / `frontend/.env.local`
+  - 預設同時啟動 API（http://localhost:8000）與前端 Dev（http://localhost:5173）
+  - 參數：`-SkipTests` 跳過測試、`-SkipStart` 只做環境
+- 跨平台：
+  - `python scripts/dev_setup.py --start`
+
+環境檢查：`python check_config.py`
+全測試：`python -m pytest -q`
+
+## CI/CD Pipeline
+
+- GitHub Actions Workflow：`.github/workflows/ci-cd.yml`
+  - PR 與 push 自動執行 `pytest`、`npm run build`
+  - `main` branch 透過 Vercel（前端）與 Railway（後端）自動部署
+- 必要 GitHub Secrets：
+  - `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, `VERCEL_ORG_ID`
+  - `RAILWAY_TOKEN`（必要）與 `RAILWAY_ENVIRONMENT`（可選）
+  - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
+- Feature Flags / Observability：
+  - `ENABLE_EMOTION_AI_P1`（開啟 Emotion AI Phase 1 worker）
+  - `OBS_SUPABASE_URL`, `OBS_SUPABASE_SERVICE_KEY`, `OBS_METRICS_TABLE`, `OBS_SESSIONS_TABLE`, `OBS_ROLE_SWITCH_TABLE`
+  - `GATEWAY_ROLES`（JSON，自訂多角色 Voice ID / 優先權 / 最大連線數）
+- 設定檔：
+  - `frontend/vercel.json`（Vercel）
+  - `railway.toml`（Railway）
+  - Telemetry client 會自動偵測上述觀測環境變數，無設定時 fallback 到 console log
+
+## WebSocket 端點（Realtime 骨架）
+
+- 路徑：`/api/realtime/ws`
+- 上行：
+  - 文本：`"ping"`（回 `pong`）或一般文字（回 echo）
+  - 二進制：音訊分片（目前回傳占位 energy 事件）
+- 下行事件示例：
+```json
+{"type":"echo","text":"hello"}
+{"type":"energy","value":0.6,"ts":1731000000000}
+{"type":"emotion","value":"neutral","intensity":0.5}
+```
+
+健康檢查：`GET /healthz`，版本：`GET /version`
+
+### Whisper Realtime（本地推理）
+
+- 依賴：`pip install faster-whisper numpy soundfile`（腳本會自動裝）
+- 音訊解碼：優先使用系統 `ffmpeg`；如無則可選安裝 `av`（PyAV）
+  - Windows 安裝 ffmpeg：`winget install Gyan.FFmpeg` 或從官網下載並加入 PATH
+- 事件：
+  - 上行二進制音訊（webm/opus 分片） → 後端轉 16kHz mono wav → STT → 下行
+  - 下行示例：`{"type":"transcript","text":"...","is_final":true}`
+
+### ElevenLabs Streaming（TTS over WS）
+
+- 端點：`/api/voice/stream-ws`
+- 上行事件：
+  - `{"type":"speech","text":"你好","voice_id":"<可選>"}`
+  - `{"type":"stop"}`
+  - `{"type":"ping"}` → 回 `pong`
+- 下行事件：
+```json
+{"type":"tts_chunk","mime":"audio/mpeg","data":"<base64>"}
+{"type":"tts_done"}
+{"type":"error","message":"..."}
+```
+- 前端播放建議：
+  - 將 `data` base64 轉為 `Uint8Array`，累積到 `MediaSource` 或以 `AudioContext.decodeAudioData` 解碼後排程播放；或臨時以 Blob URL 逐段播放（實作簡單但延遲略高）。
+
+## 流暢度優化參數（.env 可調）
+
+- STT_THROTTLE_MS（預設 700）：增量 transcript 推送的節流間隔（ms）
+- STT_SILENCE_MS（預設 1500）：視為句尾沉默的時間（ms），到達後推送 is_final:true
+- STT_ENERGY_MS（預設 120）：energy 事件的節流間隔（ms）
+- TTS_CHUNK_BYTES（預設 24576）：單次讀取的 TTS 音訊 bytes（越大事件越少）
+- TTS_AGGREGATE（預設 2）：聚合 N 個 chunk 再送出一次，降低事件密度
+
+前端已實作：
+- 啟播緩衝：累積 ≥3 塊再播放
+- 丟棄策略：queue > 50 時丟最舊 5 塊，避免堆積
+- 批次 append：每次最多追加 2 塊，降低 update 次數
