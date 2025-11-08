@@ -88,6 +88,8 @@ app = FastAPI(
     version="2.0.0"
 )
 
+ENABLE_EMOTION_AI_P1 = os.getenv("ENABLE_EMOTION_AI_P1", "false").lower() in {"1", "true", "yes"}
+
 app.include_router(whisper_router)
 telemetry_client = get_telemetry_client()
 emotion_ai_worker = EmotionAIWorker() if ENABLE_EMOTION_AI_P1 else None
@@ -143,9 +145,9 @@ ELEVEN_RETRY_BACKOFF = float(os.getenv("ELEVEN_RETRY_BACKOFF", "1.5"))
 CHATKIT_CLIENT_SECRET_SEED = os.getenv("CHATKIT_CLIENT_SECRET_SEED")
 CHATKIT_SESSION_TTL_MIN = int(os.getenv("CHATKIT_SESSION_TTL_MIN", "30"))
 CHATKIT_JWT_ALGORITHM = os.getenv("CHATKIT_JWT_ALGORITHM", "HS256")
-THROTTLE_MS = int(os.getenv("STT_THROTTLE_MS", "700"))
-SILENCE_MS = int(os.getenv("STT_SILENCE_MS", "1500"))
-ENERGY_MS = int(os.getenv("STT_ENERGY_MS", "120"))
+    THROTTLE_MS = int(os.getenv("STT_THROTTLE_MS", "700"))
+    SILENCE_MS = int(os.getenv("STT_SILENCE_MS", "1500"))
+    ENERGY_MS = int(os.getenv("STT_ENERGY_MS", "120"))
 REALTIME_PARTIAL_INTERVAL_MS = int(os.getenv("REALTIME_PARTIAL_INTERVAL_MS", str(THROTTLE_MS)))
 REALTIME_FINAL_SILENCE_MS = int(os.getenv("REALTIME_FINAL_SILENCE_MS", str(SILENCE_MS)))
 REALTIME_CHUNK_THRESHOLD = int(os.getenv("REALTIME_CHUNK_THRESHOLD", "3"))
@@ -153,7 +155,6 @@ GATEWAY_JWT_SECRET = os.getenv("GATEWAY_JWT_SECRET", SERVICE_API_KEY or "")
 GATEWAY_JWT_ALGORITHM = os.getenv("GATEWAY_JWT_ALGORITHM", CHATKIT_JWT_ALGORITHM or "HS256")
 GATEWAY_JWT_AUDIENCE = os.getenv("GATEWAY_JWT_AUDIENCE")
 GATEWAY_JWT_ISSUER = os.getenv("GATEWAY_JWT_ISSUER")
-ENABLE_EMOTION_AI_P1 = os.getenv("ENABLE_EMOTION_AI_P1", "false").lower() in {"1", "true", "yes"}
 
 async def _handle_voice_stream(ws: WebSocket):
     token = _extract_gateway_token(ws)
@@ -1030,7 +1031,7 @@ class LingyaGatewayMultiRole:
         if not data:
             return None
         b64 = base64.b64encode(data).decode("ascii")
-        return {
+    return {
             "type": "tts.stream",
             "session_id": self.session_id,
             "mime": "audio/mpeg",
@@ -1232,9 +1233,9 @@ async def root():
     return HTMLResponse(
         content=json.dumps(
             {
-                "message": "黃蓉語音系統 API v2.0",
-                "endpoints": {
-                    "POST /api/voice/huangrong": "產生語音並回傳 URL",
+        "message": "黃蓉語音系統 API v2.0",
+        "endpoints": {
+            "POST /api/voice/huangrong": "產生語音並回傳 URL",
                     "POST /api/voice/huangrong/stream": "直接返回音訊流",
                 },
             },
