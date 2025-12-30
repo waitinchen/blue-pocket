@@ -1,0 +1,66 @@
+```yaml
+name: 藍色口袋情報自動化
+
+on:
+  schedule:
+    # 每 6 小時執行一次（UTC 時間）
+    # UTC 00:00, 06:00, 12:00, 18:00
+    # 對應台灣時間（UTC+8）：08:00, 14:00, 20:00, 02:00
+    - cron: '0 */6 * * *'
+  
+  # 允許手動觸發
+  workflow_dispatch:
+
+jobs:
+  intelligence-crawler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # 設置超時時間為 30 分鐘
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create credentials.json
+      run: |
+        echo '${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}' > credentials.json
+      shell: bash
+    
+    - name: Create .env file
+      run: |
+        echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
+        echo "GOOGLE_SHEETS_SPREADSHEET_ID=${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}" >> .env
+        echo "LLM_PROVIDER=openai" >> .env
+        echo "OPENAI_MODEL=gpt-4-turbo-preview" >> .env
+        echo "LOG_LEVEL=INFO" >> .env
+      shell: bash
+    
+    - name: Run intelligence crawler
+      run: |
+        python main.py
+    
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: intelligence-logs-${{ github.run_number }}
+        path: logs/
+        retention-days: 7
+```
