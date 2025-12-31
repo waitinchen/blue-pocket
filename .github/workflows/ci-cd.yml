@@ -83,8 +83,5 @@ jobs:
       - name: Deploy backend to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
         run: |
-          railway login --token "$RAILWAY_TOKEN"
-          railway up --service backend ${RAILWAY_ENVIRONMENT:+--environment "$RAILWAY_ENVIRONMENT"} --detach
-
+          railway up --service backend --detach
