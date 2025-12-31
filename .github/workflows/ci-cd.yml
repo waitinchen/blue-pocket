@@ -80,8 +80,8 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Deploy to Railway
+- name: Deploy to Railway
         run: |
-          railway up --detach
+          railway up --service 72d78d4d-585a-4b7a-9bff-db641b2f9177 --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
