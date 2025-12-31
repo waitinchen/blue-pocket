@@ -1,34 +1,26 @@
-# syntax=docker/dockerfile:1
+# 簡化的 Dockerfile - 只構建後端 API
+# 跳過前端構建，因為情報自動化模組只需要後端
 
-FROM node:20-alpine AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ ./
-RUN npm run build
-
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# 安裝依賴
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# 複製應用程序代碼
+COPY main.py ./
+COPY src/ ./src/ 2>/dev/null || true
 
-# copy built frontend assets from node stage
-COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+# 創建日誌目錄
+RUN mkdir -p logs
 
-RUN chmod +x ./docker-entrypoint.sh ./scripts/start_server.sh
+# 暴露端口
+EXPOSE 8080
 
-ENV APP_ENV=dev
-
-EXPOSE 8000
-
-ENTRYPOINT ["./docker-entrypoint.sh"]
-CMD ["./scripts/start_server.sh"]
-
-
+# 啟動命令（Railway 會使用 Settings 中配置的 Start Command）
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
