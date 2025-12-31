@@ -1,13 +1,9 @@
 [project]
-name = "lingya-voice-chat"
+name = "blue-pocket"
 
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
 
 [deploy]
 healthcheckPath = "/healthz"
 restartPolicyType = "on_failure"
-
-[services.backend]
-start = "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"
-
