@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 複製應用程序代碼
 COPY main.py ./
-COPY src/ ./src/ 2>/dev/null || true
+
 
 # 創建日誌目錄
 RUN mkdir -p logs
